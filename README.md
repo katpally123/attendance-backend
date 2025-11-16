@@ -27,9 +27,8 @@ python app.py
 ## Endpoints
 
 - `GET /` — health check; returns `Backend running!`.
-- `GET|POST /api/generate-dashboard` — generates an Excel workbook and returns it as a download.
-  - GET: Uses built-in dummy data for quick testing.
-  - POST: Provide a JSON payload with metric data.
+- `POST /api/generate-dashboard` — generates an Excel workbook and returns it as a download. Provide a JSON payload with metric data.
+- `GET /api/generate-dashboard/test` — convenience endpoint using built-in dummy data (manual testing).
 
 ### Example payload (partial)
 ```json
@@ -83,17 +82,22 @@ curl -X POST "http://localhost:10000/api/generate-dashboard" \
   - `L` (Grand total) = SDC + ICQA + IXD
 - `MET*` rows are forced to 0 by design.
 
-## Deployment
+## Deployment (Render)
 
-- A `Procfile` is included for platforms like Heroku:
-  ```
-  web: gunicorn app:app --workers 2 --timeout 120
-  ```
-- The app respects `PORT` if provided by the host.
-- On Windows use `python app.py` for local development; `gunicorn` is used in Linux containers/VMs.
+1) Push your repo to GitHub with `app.py`, `requirements.txt`, and `Site_Split_Template.xlsx` in the root.
+2) In Render, create a new Web Service:
+   - Environment: `Python 3`
+   - Build Command: `pip install -r requirements.txt`
+   - Start Command: `gunicorn app:app --timeout 120 --workers 2`
+3) Render provides `PORT`; the app reads it automatically.
+4) Redeploy after changes by pushing to GitHub.
+
+Note: A `Procfile` is included for other platforms; Render primarily uses the Start Command above.
 
 ## Troubleshooting
 
 - Missing template error: Place `Site_Split_Template.xlsx` in the project root.
 - Invalid JSON on POST: Endpoint returns 400 with a helpful error message.
 - CORS: Currently open; restrict origins if needed for production.
+- 404 Not Found: Verify the path `/api/generate-dashboard` and that your Render service URL is correct.
+- 405 Method Not Allowed: Use POST for `/api/generate-dashboard`; GET is only for `/api/generate-dashboard/test`.

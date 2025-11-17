@@ -1,4 +1,5 @@
 import os
+import json
 from io import BytesIO
 from typing import Dict, Any
 
@@ -7,20 +8,23 @@ from flask_cors import CORS
 from openpyxl import load_workbook
 
 app = Flask(__name__)
+# Enable CORS for all endpoints
 CORS(app)
 
 TEMPLATE_FILE = "Site_Split_Template.xlsx"
 
 # Final row mapping
 ROW_MAP = {
+    # Updated metric keys to match frontend exactly
     "RegularHC": 6,
-    "PresentHC": 7,
+    "RegularHCPresent": 7,  # renamed from PresentHC
     "SwapOut": 8,
     "SwapExpected": 9,
     "SwapPresent": 10,
     "VTO": 12,
     "VETAccepted": 13,
     "VETPresent": 14,
+    # Retain MET rows if still provided
     "METExpected": 18,
     "METPresent": 19,
 }
@@ -83,35 +87,43 @@ def validate_payload(payload: Any) -> Dict[str, Dict[str, int]]:
     return normalized
 
 
-def fill_sheet(ws, data: Dict[str, Dict[str, int]]):
-    """
-    Fill the DD-Metrics sheet with the given data dict.
+def fill_sheet(ws, data: Dict[str, Dict[str, Any]]):
+    """Fill the DD-Metrics sheet using nested frontend keys.
+
+    Expected metric structure per metric:
+    {
+      "Inbound": {"AMZN": int, "TEMP": int, ...},
+      "DA": {"AMZN": int, "TEMP": int, ...},
+      "ICQA": {"AMZN": int, "TEMP": int, ...},
+      "CRETs": {"AMZN": int, "TEMP": int, ...}
+    }
+    Any missing keys default to 0. MET* rows remain forced to zero.
     """
     for metric, row in ROW_MAP.items():
         metric_data = data.get(metric, {}) or {}
 
-        # MET rows are forced to zero
+        # Extract nested department dictionaries
+        inbound_dict = metric_data.get("Inbound", {}) or {}
+        da_dict = metric_data.get("DA", {}) or {}
+        icqa_dict = metric_data.get("ICQA", {}) or {}
+        crets_dict = metric_data.get("CRETs", {}) or {}
+
         if metric.startswith("MET"):
             inbound_amzn = inbound_temp = da_amzn = da_temp = 0
             icqa_amzn = icqa_temp = 0
             crets_amzn = crets_temp = 0
-
-            # write zeros into all dept cells
             for col in ["B", "C", "D", "E", "G", "H", "I", "J"]:
                 ws[f"{col}{row}"] = 0
-
         else:
-            # normal metrics use provided values
-            inbound_amzn = metric_data.get("inbound_amzn", 0)
-            inbound_temp = metric_data.get("inbound_temp", 0)
-            da_amzn = metric_data.get("da_amzn", 0)
-            da_temp = metric_data.get("da_temp", 0)
-            icqa_amzn = metric_data.get("icqa_amzn", 0)
-            icqa_temp = metric_data.get("icqa_temp", 0)
-            crets_amzn = metric_data.get("crets_amzn", 0)
-            crets_temp = metric_data.get("crets_temp", 0)
+            inbound_amzn = int(inbound_dict.get("AMZN", 0) or 0)
+            inbound_temp = int(inbound_dict.get("TEMP", 0) or 0)
+            da_amzn = int(da_dict.get("AMZN", 0) or 0)
+            da_temp = int(da_dict.get("TEMP", 0) or 0)
+            icqa_amzn = int(icqa_dict.get("AMZN", 0) or 0)
+            icqa_temp = int(icqa_dict.get("TEMP", 0) or 0)
+            crets_amzn = int(crets_dict.get("AMZN", 0) or 0)
+            crets_temp = int(crets_dict.get("TEMP", 0) or 0)
 
-            # write individual dept values
             ws[f"B{row}"] = inbound_amzn
             ws[f"C{row}"] = inbound_temp
             ws[f"D{row}"] = da_amzn
@@ -121,33 +133,38 @@ def fill_sheet(ws, data: Dict[str, Dict[str, int]]):
             ws[f"I{row}"] = crets_amzn
             ws[f"J{row}"] = crets_temp
 
-        # SDC TOTAL = inbound + DA  → col F
         sdc_total = inbound_amzn + inbound_temp + da_amzn + da_temp
         ws[f"F{row}"] = sdc_total
-
-        # IXD TOTAL = CRETs only → col K
         ixd_total = crets_amzn + crets_temp
         ws[f"K{row}"] = ixd_total
-
-        # Grand TOTAL = SDC + ICQA + CRETs → col L
         grand_total = sdc_total + icqa_amzn + icqa_temp + ixd_total
         ws[f"L{row}"] = grand_total
 
 
-@app.route("/api/generate-dashboard", methods=["POST"])
+@app.route("/api/generate-dashboard", methods=["POST", "OPTIONS"])
 def generate_dashboard():
     """Generate the Excel using a JSON payload, return as a file download."""
-    if not request.is_json:
-        return jsonify({"error": "Content-Type must be application/json"}), 415
+    print("[BACKEND] Received POST /api/generate-dashboard")
 
-    raw_payload = request.get_json(silent=True)
-    if raw_payload is None:
-        return jsonify({"error": "Invalid or missing JSON payload"}), 400
+    # Robust JSON parsing with OPTIONS short-circuit
+    if request.method == "OPTIONS":
+        return "", 200
 
     try:
-        payload = validate_payload(raw_payload)
-    except ValueError as exc:
-        return jsonify({"error": str(exc)}), 400
+        payload = request.get_json()
+        if payload is None:
+            payload = json.loads(request.data.decode("utf-8") or "{}")
+    except Exception:
+        payload = json.loads(request.data.decode("utf-8") or "{}")
+
+    print("[BACKEND] FINAL PARSED PAYLOAD:", payload)
+
+    # Additional debug logs (no logic changes)
+    data = payload
+    print(data.keys())
+    print(json.dumps(data, indent=2))
+
+    # Skip previous flat validation; use nested structure directly.
 
     try:
         template_path = resolve_template_path(TEMPLATE_FILE)
@@ -166,6 +183,16 @@ def generate_dashboard():
     ws = wb["DD-Metrics"] if "DD-Metrics" in wb.sheetnames else wb.active
 
     try:
+        # Debug logs requested before writing to Excel
+        print("[DEBUG] RegularHC:", payload.get("RegularHC"))
+        print("[DEBUG] Inbound:", payload.get("RegularHC", {}).get("Inbound"))
+        print("[DEBUG] DA:", payload.get("RegularHC", {}).get("DA"))
+        print("[DEBUG] ICQA:", payload.get("RegularHC", {}).get("ICQA"))
+        print("[DEBUG] CRETs:", payload.get("RegularHC", {}).get("CRETs"))
+
+        print("[DEBUG] Extracted inbound AMZN:", payload.get("RegularHC", {}).get("Inbound", {}).get("AMZN"))
+        print("[DEBUG] Extracted inbound TEMP:", payload.get("RegularHC", {}).get("Inbound", {}).get("TEMP"))
+
         fill_sheet(ws, payload)
         output = BytesIO()
         wb.save(output)
